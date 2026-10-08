@@ -1,0 +1,18 @@
+{
+  "channels": [
+    {
+      "id": "FUJI",
+      "name": "FUJI",
+      "youtube": "https://www.youtube.com/@fujihealthcarevn/shorts",
+      "tiktok": "https://www.tiktok.com/@fujihealthcare",
+      "facebook": "https://www.facebook.com/fujihealthcare.vn/reels/"
+    },
+    {
+      "id": "KAITASHI",
+      "name": "KAITASHI",
+      "youtube": "https://www.youtube.com/@kaitashihealthcare/shorts",
+      "tiktok": "https://www.tiktok.com/@kaitashi.daily",
+      "facebook": "https://www.facebook.com/kaitashihealthcare/reels/"
+    }
+  ]
+}
