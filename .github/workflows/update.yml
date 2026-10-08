@@ -1,0 +1,60 @@
+name: Cập nhật view & đăng lên GitHub Pages
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch: {}
+  push:
+    branches: [main]
+    paths-ignore: ["data/**"]
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: update-views
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    environment:
+      name: github-pages
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - uses: actions/setup-node@v4
+        with: { node-version: "20" }
+      - name: Cài công cụ
+        run: |
+          pip install -U yt-dlp
+          npm install --no-save playwright
+          npx playwright install --with-deps chromium
+      - name: Thu thập số view
+        env:
+          YT_API_KEY: ${{ secrets.YT_API_KEY }}
+          FB_TOKEN_FUJI: ${{ secrets.FB_TOKEN_FUJI }}
+          FB_TOKEN_KAITASHI: ${{ secrets.FB_TOKEN_KAITASHI }}
+          IG_TOKEN_FUJI: ${{ secrets.IG_TOKEN_FUJI }}
+          IG_TOKEN_KAITASHI: ${{ secrets.IG_TOKEN_KAITASHI }}
+          IG_USER_ID_FUJI: ${{ secrets.IG_USER_ID_FUJI }}
+          IG_USER_ID_KAITASHI: ${{ secrets.IG_USER_ID_KAITASHI }}
+        run: python update.py
+      - name: Lưu dữ liệu vào repo
+        run: |
+          git config user.name "view-bot"
+          git config user.email "view-bot@users.noreply.github.com"
+          git add data
+          git diff --cached --quiet || (git commit -m "data: cập nhật $(date -u +'%Y-%m-%d %H:%M') UTC" && git pull --rebase && git push)
+      - name: Chuẩn bị trang
+        run: |
+          mkdir _site
+          cp index.html style.css app.js chart.umd.min.js _site/ && cp -r data _site/
+          rm -f _site/data/fb_titles_*.json
+      - uses: actions/upload-pages-artifact@v3
+        with: { path: _site }
+      - uses: actions/deploy-pages@v4
