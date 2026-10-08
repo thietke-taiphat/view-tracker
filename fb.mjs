@@ -28,9 +28,15 @@ const ctx = await browser.newContext({
 });
 const page = await ctx.newPage();
 const reels = new Map();
+let followers = null;
 try {
   await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
   await page.waitForTimeout(5000);
+  try {
+    const body = await page.innerText('body');
+    const fm = body.match(/([\d.,]+\s*(?:K|M|N|Tr)?)\s*(?:người theo dõi|followers)/i);
+    followers = fm ? parseCount(fm[1]) : null;
+  } catch (e) {}
   let stable = 0;
   for (let i = 0; i < 60 && stable < 4; i++) {
     const items = await page.$$eval('a[href*="/reel/"]', as => as.map(a => [a.href, a.innerText.trim()]));
@@ -65,6 +71,6 @@ try {
 await browser.close();
 const list = [...reels.values()].map(r => ({ ...r, title: cache[r.id] || '' }));
 fs.writeFileSync(cachePath, JSON.stringify(cache));
-fs.writeFileSync(out, JSON.stringify(list));
+fs.writeFileSync(out, JSON.stringify({ followers, reels: list }));
 console.log(`FB ${url}: ${list.length} reels, ${list.filter(r => r.title).length} có tiêu đề`);
 process.exit(0);

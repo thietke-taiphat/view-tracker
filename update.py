@@ -11,6 +11,9 @@ PLATS = ["yt", "tt", "fb", "ig"]
 YT_KEY = os.environ.get("YT_API_KEY", "").strip()
 
 
+FOLLOW_TMP = {}  # số người theo dõi lấy được trong lần fetch gần nhất, theo nền tảng
+
+
 class NeedsSetup(Exception):
     pass
 
@@ -27,12 +30,16 @@ def run_ytdlp(url):
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
     if r.returncode != 0 or not r.stdout.strip():
         raise RuntimeError(r.stderr[-300:] or "yt-dlp lỗi")
-    return json.loads(r.stdout).get("entries") or []
+    data = json.loads(r.stdout)
+    FOLLOW_TMP["_ytdlp"] = data.get("channel_follower_count")
+    return data.get("entries") or []
 
 
 def fetch_yt(url):
     items = []
-    for e in run_ytdlp(url):
+    entries = run_ytdlp(url)
+    FOLLOW_TMP["yt"] = FOLLOW_TMP.pop("_ytdlp", None)
+    for e in entries:
         vid = e.get("id")
         if not vid:
             continue
@@ -56,7 +63,15 @@ def fetch_yt(url):
 def fetch_tt(url):
     url = url.split("?")[0]
     items = []
-    for e in run_ytdlp(url):
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124 Safari/537.36"})
+        m = re.search(r'"stats":\{"followerCount":(\d+)', urllib.request.urlopen(req, timeout=30).read().decode("utf-8", "ignore"))
+        FOLLOW_TMP["tt"] = int(m.group(1)) if m else None
+    except Exception as ex:
+        print("TikTok follower lỗi:", str(ex)[:100])
+    entries = run_ytdlp(url)
+    FOLLOW_TMP.pop("_ytdlp", None)
+    for e in entries:
         vid = e.get("id")
         if not vid:
             continue
@@ -83,6 +98,11 @@ def fetch_fb_graph(token, public):
         if not j.get("paging", {}).get("next") or not after:
             break
         nxt["after"] = after
+    try:
+        j = graph("me", token, fields="followers_count,fan_count")
+        FOLLOW_TMP["fb"] = j.get("followers_count") or j.get("fan_count")
+    except Exception as ex:
+        print("Graph followers lỗi:", str(ex)[:100])
     views = {}
     for i in range(0, len(reels), 40):
         ids = ",".join(r["id"] for r in reels[i:i + 40])
@@ -112,8 +132,10 @@ def fetch_fb(url, tag):
         cmd = ["node", str(ROOT / "fb.mjs"), url, str(out), str(cache)]
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=1500, cwd=ROOT)
         print(r.stdout.strip(), r.stderr.strip()[-300:])
-        items = json.loads(out.read_text(encoding="utf-8"))
+        obj = json.loads(out.read_text(encoding="utf-8"))
         out.unlink(missing_ok=True)
+        items = obj["reels"]
+        FOLLOW_TMP["fb"] = obj.get("followers")
         items = [{"id": x["id"], "url": x["url"], "title": x.get("title") or "", "views": x.get("views") or 0} for x in items]
     except Exception as ex:
         err = ex
@@ -141,6 +163,10 @@ def fetch_ig(url, tag):
         uid = graph("me", token, fields="instagram_business_account").get("instagram_business_account", {}).get("id")
         if not uid:
             raise RuntimeError("Không tìm thấy tài khoản Instagram liên kết với token")
+    try:
+        FOLLOW_TMP["ig"] = graph(uid, token, fields="followers_count").get("followers_count")
+    except Exception as ex:
+        print("IG followers lỗi:", str(ex)[:100])
     media, params = [], {"fields": "id,caption,permalink,media_product_type", "limit": 100}
     while True:
         j = graph(f"{uid}/media", token, **params)
@@ -244,17 +270,22 @@ def main():
     for ch in CFG["channels"]:
         cid = ch["id"]
         prev = old.get("channels", {}).get(cid, {}).get("raw", {})
-        per, status = {}, {}
+        per, status, fol = {}, {}, {}
+        prev_fol = old.get("channels", {}).get(cid, {}).get("followers", {})
         for plat, fn in (("yt", lambda: fetch_yt(ch["youtube"])), ("tt", lambda: fetch_tt(ch["tiktok"])),
                          ("fb", lambda: fetch_fb(ch["facebook"], cid.lower())),
                          ("ig", lambda: fetch_ig(ch.get("instagram", ""), cid.lower()))):
             try:
+                FOLLOW_TMP.clear()
                 per[plat] = fn(); status[plat] = {"ok": True, "count": len(per[plat])}
+                fol[plat] = FOLLOW_TMP.get(plat) if FOLLOW_TMP.get(plat) is not None else prev_fol.get(plat, 0)
                 print(f"[{cid}] {plat}: {len(per[plat])} video")
             except NeedsSetup as ex:
+                fol[plat] = 0
                 per[plat] = []; status[plat] = {"ok": False, "setup": True, "count": 0, "error": str(ex)}
                 print(f"[{cid}] {plat}: {ex}")
             except Exception as ex:
+                fol[plat] = prev_fol.get(plat, 0)
                 per[plat] = prev.get(plat, [])  # lỗi -> giữ số liệu lần trước để biểu đồ không bị tụt
                 status[plat] = {"ok": False, "count": len(per[plat]), "error": str(ex)[:200]}
                 print(f"[{cid}] {plat} LỖI: {ex}")
@@ -263,13 +294,13 @@ def main():
         tot_match = {p: sum(r["views"].get(p, 0) for r in rows if r["n"] >= 2) for p in PLATS}
         result["channels"][cid] = {
             "name": ch["name"], "sources": {"yt": ch["youtube"], "tt": ch["tiktok"], "fb": ch["facebook"], "ig": ch.get("instagram", "")},
-            "status": status, "totals_all": tot_all, "totals_matched": tot_match,
+            "status": status, "followers": fol, "totals_all": tot_all, "totals_matched": tot_match,
             "rows": rows, "raw": {p: [{k: v for k, v in x.items() if not k.startswith("_")} for x in per[p]] for p in PLATS},
         }
         # chỉ ghi điểm lịch sử khi có ít nhất 1 nền tảng cập nhật thành công
         if any(s["ok"] for s in status.values()):  # (ig chưa kết nối không tính là lỗi)
             h = hist.setdefault(cid, [])
-            h.append({"t": now, "all": tot_all, "matched": tot_match, "videos": len(rows),
+            h.append({"t": now, "followers": fol, "all": tot_all, "matched": tot_match, "videos": len(rows),
                       "matched_videos": sum(1 for r in rows if r["n"] >= 2)})
             hist[cid] = thin(h, now)
     (DATA / "data.json").write_text(json.dumps(result, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")

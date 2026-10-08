@@ -3,7 +3,7 @@ const COLORS = {yt:'#e53935', tt:'#111827', fb:'#1877f2', ig:'#c13584'};
 const BRAND = {FUJI:'#0b5fff', KAITASHI:'#0f9d6b'};
 const fmt = n => (n ?? 0).toLocaleString('vi-VN');
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-const state = {data:null, hist:null, range:{}, sort:{}, q:{}, charts:{}};
+const state = {metric:{}, data:null, hist:null, range:{}, sort:{}, q:{}, charts:{}};
 const only = () => document.getElementById('onlyMatched').checked;
 const sum = o => Object.values(o||{}).reduce((a,b)=>a+b,0);
 
@@ -51,8 +51,8 @@ function section(id,ch){
       ${Object.keys(PL).map(p=>`<a class="muted" target="_blank" rel="noopener" href="${esc(ch.sources[p])}">${PL[p].n} ↗</a>`).join(' · ')}</div>
     ${errs}
     <div class="kpis">
-      <div class="kpi main"><small>Tổng view các nền tảng</small><b>${fmt(grand)}</b>${g?`<em>▲ ${fmt(g.d)} trong ${g.label} qua</em>`:''}</div>
-      ${Object.keys(PL).map(p=>`<div class="kpi"><small>${PL[p].n}</small><b>${ch.status[p]?.setup?'<span class="muted" style="font-size:14px">Chưa kết nối</span>':fmt(tot[p])}</b></div>`).join('')}
+      <div class="kpi main"><small>Tổng view các nền tảng</small><b>${fmt(grand)}</b>${g?`<em>▲ ${fmt(g.d)} trong ${g.label} qua</em>`:''}<div style="margin-top:6px;font-size:13px">👥 ${fmt(sum(ch.followers))} người theo dõi</div></div>
+      ${Object.keys(PL).map(p=>`<div class="kpi"><small>${PL[p].n}</small><b>${ch.status[p]?.setup?'<span class="muted" style="font-size:14px">Chưa kết nối</span>':fmt(tot[p])}</b><div class="muted" style="margin-top:4px;font-size:13px">👥 ${ch.status[p]?.setup?'—':fmt(ch.followers?.[p])} theo dõi</div></div>`).join('')}
     </div>
     <div class="grid">
       <div class="card">
@@ -60,7 +60,8 @@ function section(id,ch){
         <div class="tw"><table id="tb-${id}">${tableHTML(id,ch)}</table></div>
       </div>
       <div class="side card">
-        <div class="card-h"><h3>Tăng trưởng lượt view</h3>
+        <div class="card-h"><h3>Tăng trưởng</h3>
+          <div class="seg" data-metric="${id}">${[['views','Lượt view'],['followers','Người theo dõi']].map(([k,l])=>`<button data-m="${k}" class="${(state.metric[id]||'views')==k?'on':''}">${l}</button>`).join('')}</div>
           <div class="seg" data-range="${id}">${[['24h',1],['7 ngày',7],['30 ngày',30],['Tất cả',0]].map(([l,d])=>`<button data-d="${d}" class="${(state.range[id]??0)==d?'on':''}">${l}</button>`).join('')}</div></div>
         <div class="chart-box"><canvas id="ch-${id}" height="300"></canvas></div>
         <div class="note" id="cn-${id}"></div>
@@ -89,7 +90,8 @@ function tableHTML(id,ch){
 
 function series(id){
   const h=(state.hist[id]||[]); const key=only()?'matched':'all';
-  return h.map(p=>({t:p.t*1000, yt:p[key].yt||0, tt:p[key].tt||0, fb:p[key].fb||0, ig:p[key].ig||0, all:sum(p[key])}));
+  const src = (state.metric[id]||'views')==='followers' ? (p=>p.followers||{}) : (p=>p[key]);
+  return h.map(p=>{const v=src(p); return {t:p.t*1000, yt:v.yt||0, tt:v.tt||0, fb:v.fb||0, ig:v.ig||0, all:sum(v)};});
 }
 function ranged(id){
   const d=state.range[id]??0, s=series(id);
@@ -99,7 +101,7 @@ function ranged(id){
   const before=s.filter(p=>p.t<from).pop(); return before? [before,...r] : r;
 }
 function growth(id){
-  const s=ranged(id); if(s.length<2) return null;
+  const keep=state.metric[id]; state.metric[id]='views'; const s=ranged(id); state.metric[id]=keep; if(s.length<2) return null;
   const d=s[s.length-1].all-s[0].all; const days=(s[s.length-1].t-s[0].t)/86400000;
   const label= days<1/24? Math.max(1,Math.round(days*1440))+' phút' : days<1.2? Math.round(days*24)+' giờ' : Math.round(days)+' ngày';
   return d>0?{d,label}:null;
@@ -123,6 +125,8 @@ function drawChart(id){
 function bindSection(id,ch){
   const sec=document.getElementById('sec-'+id);
   sec.querySelector('[data-q]').addEventListener('input',e=>{state.q[id]=e.target.value;sec.querySelector('table').innerHTML=tableHTML(id,ch);bindSort(sec,ch)});
+  sec.querySelectorAll('[data-metric] button').forEach(b=>b.onclick=()=>{state.metric[id]=b.dataset.m;
+    sec.querySelectorAll('[data-metric] button').forEach(x=>x.classList.toggle('on',x===b));drawChart(id);});
   sec.querySelectorAll('[data-range] button').forEach(b=>b.onclick=()=>{state.range[id]=+b.dataset.d;
     sec.querySelectorAll('[data-range] button').forEach(x=>x.classList.toggle('on',x===b));drawChart(id);});
   bindSort(sec,ch);
