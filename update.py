@@ -278,6 +278,7 @@ def build_rows(per):
             "title": title,
             "links": {p: its[p]["url"] for p in PLATS if p in its},
             "views": {p: its[p]["views"] for p in PLATS if p in its},
+            "published_dates": {p: its[p].get("published_at") for p in PLATS if p in its},
             "total": sum(its[p]["views"] for p in its),
             "n": len(its),
             "published_at": max((x.get("published_at") or 0 for x in its.values()), default=0) or None,
@@ -310,6 +311,8 @@ def main():
         cid = ch["id"]
         prev = old.get("channels", {}).get(cid, {}).get("raw", {})
         per, status, fol = {}, {}, {}
+        FOLLOW_AVAIL = {}
+        prev_known = old.get("channels", {}).get(cid, {}).get("followers_known", {})
         prev_fol = old.get("channels", {}).get(cid, {}).get("followers", {})
         for plat, fn in (("yt", lambda: fetch_yt(ch["youtube"])), ("tt", lambda: fetch_tt(ch["tiktok"])),
                          ("fb", lambda: fetch_fb(ch["facebook"], cid.lower())),
@@ -318,12 +321,15 @@ def main():
                 FOLLOW_TMP.clear()
                 per[plat] = enrich_items(fn(), prev.get(plat, []), now); status[plat] = {"ok": True, "count": len(per[plat])}
                 fol[plat] = FOLLOW_TMP.get(plat) if FOLLOW_TMP.get(plat) is not None else prev_fol.get(plat, 0)
+                FOLLOW_AVAIL[plat] = FOLLOW_TMP.get(plat) is not None or prev_known.get(plat, bool(prev_fol.get(plat)))
                 print(f"[{cid}] {plat}: {len(per[plat])} video")
             except NeedsSetup as ex:
+                FOLLOW_AVAIL[plat] = False
                 fol[plat] = 0
                 per[plat] = []; status[plat] = {"ok": False, "setup": True, "count": 0, "error": str(ex)}
                 print(f"[{cid}] {plat}: {ex}")
             except Exception as ex:
+                FOLLOW_AVAIL[plat] = prev_known.get(plat, bool(prev_fol.get(plat)))
                 fol[plat] = prev_fol.get(plat, 0)
                 per[plat] = prev.get(plat, [])  # lỗi -> giữ số liệu lần trước để biểu đồ không bị tụt
                 status[plat] = {"ok": False, "count": len(per[plat]), "error": str(ex)[:200]}
@@ -333,14 +339,15 @@ def main():
         tot_match = {p: sum(r["views"].get(p, 0) for r in rows if r["n"] >= 2) for p in PLATS}
         result["channels"][cid] = {
             "name": ch["name"], "sources": {"yt": ch["youtube"], "tt": ch["tiktok"], "fb": ch["facebook"], "ig": ch.get("instagram", "")},
-            "status": status, "followers": fol, "totals_all": tot_all, "totals_matched": tot_match,
+            "status": status, "followers": fol, "followers_known": FOLLOW_AVAIL, "totals_all": tot_all, "totals_matched": tot_match,
             "rows": rows, "raw": {p: [{k: v for k, v in x.items() if not k.startswith("_")} for x in per[p]] for p in PLATS},
         }
         # chỉ ghi điểm lịch sử khi có ít nhất 1 nền tảng cập nhật thành công
         if any(s["ok"] for s in status.values()):  # (ig chưa kết nối không tính là lỗi)
             h = hist.setdefault(cid, [])
             h.append({"t": now, "followers": fol, "all": tot_all, "matched": tot_match, "videos": len(rows),
-                      "matched_videos": sum(1 for r in rows if r["n"] >= 2)})
+                      "matched_videos": sum(1 for r in rows if r["n"] >= 2),
+                      "status": status, "followers_known": {p: FOLLOW_AVAIL.get(p, False) for p in PLATS}})
             hist[cid] = thin(h, now)
     (DATA / "data.json").write_text(json.dumps(result, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
     (DATA / "history.json").write_text(json.dumps(hist, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
