@@ -4,6 +4,30 @@ const BRAND = {FUJI:'#0b5fff', KAITASHI:'#0f9d6b'};
 const fmt = n => (n ?? 0).toLocaleString('vi-VN');
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const state = {metric:{}, data:null, hist:null, range:{}, sort:{}, q:{}, charts:{}};
+try { state.sort = JSON.parse(localStorage.getItem('view-tracker-sort') || '{}'); } catch(e) {}
+const SORTS = {
+  total_desc: {k:'total',d:-1,label:'Nhiều view nhất'},
+  total_asc: {k:'total',d:1,label:'Ít view nhất'},
+  published_at_desc: {k:'published_at',d:-1,label:'Mới đăng nhất'},
+  first_seen_desc: {k:'first_seen',d:-1,label:'Mới được ghi nhận'},
+  title_asc: {k:'title',d:1,label:'Tên A–Z'}
+};
+function rememberSort(){ try { localStorage.setItem('view-tracker-sort', JSON.stringify(state.sort)); } catch(e) {} }
+function dateLabel(ts){ return ts ? new Date(ts*1000).toLocaleDateString('vi-VN') : ''; }
+function sortedRows(id,ch){
+  const q=(state.q[id]||'').toLowerCase();
+  const rows=visibleRows(ch).filter(r=>!q||r.title.toLowerCase().includes(q));
+  const s=state.sort[id]||SORTS.total_desc;
+  return [...rows].sort((a,b)=>{
+    if(s.k==='title') return s.d*a.title.localeCompare(b.title,'vi');
+    if(s.k==='published_at'||s.k==='first_seen'){
+      if(!a[s.k]&&!b[s.k]) return b.total-a.total;
+      if(!a[s.k]) return 1;
+      if(!b[s.k]) return -1;
+    }
+    return s.d*((a[s.k]??0)-(b[s.k]??0)) || b.total-a.total;
+  });
+}
 const only = () => document.getElementById('onlyMatched').checked;
 const sum = o => Object.values(o||{}).reduce((a,b)=>a+b,0);
 
@@ -57,6 +81,13 @@ function section(id,ch){
     <div class="grid">
       <div class="card">
         <div class="card-h"><h3>Danh sách video</h3><input type="search" placeholder="Tìm tên video…" data-q="${id}" value="${esc(state.q[id]||'')}"></div>
+        <div style="padding:10px 18px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+          <label for="sort-${id}">Sắp xếp:</label>
+          <select id="sort-${id}" data-order="${id}" style="padding:8px;border:1px solid #d1d5db;border-radius:8px;background:white;max-width:100%">
+            ${Object.entries(SORTS).map(([key,opt])=>`<option value="${key}" ${((state.sort[id]?.k||'total')===opt.k&&(state.sort[id]?.d??-1)===opt.d)?'selected':''}>${opt.label}</option>`).join('')}
+          </select>
+        </div>
+        <p class="muted" style="padding:0 18px;font-size:12px">Mới đăng nhất: theo ngày đăng gần nhất tìm được trong mỗi dòng; video thiếu ngày xếp cuối. Mới được ghi nhận: lúc hệ thống thấy video lần đầu, không phải ngày đăng; dữ liệu này bắt đầu từ bản cập nhật này.</p>
         <div class="tw"><table id="tb-${id}">${tableHTML(id,ch)}</table></div>
       </div>
       <div class="side card">
@@ -71,14 +102,12 @@ function section(id,ch){
 }
 
 function tableHTML(id,ch){
-  const q=(state.q[id]||'').toLowerCase();
-  let rows=visibleRows(ch).filter(r=>!q||r.title.toLowerCase().includes(q));
-  const s=state.sort[id]||{k:'total',d:-1};
-  rows=[...rows].sort((a,b)=> s.k==='title'? s.d*a.title.localeCompare(b.title,'vi') : s.d*((a[s.k]??0)-(b[s.k]??0)));
+  const rows=sortedRows(id,ch);
+  const s=state.sort[id]||SORTS.total_desc;
   const th=(k,l,cls='')=>`<th class="${cls}" data-sort="${id}:${k}">${l}${s.k===k?(s.d<0?' ▼':' ▲'):''}</th>`;
   const body=rows.map((r,i)=>`<tr>
     <td class="stt">${i+1}</td>
-    <td class="title">${esc(r.title)||'<span class="muted">(không có tiêu đề)</span>'}</td>
+    <td class="title">${esc(r.title)||'<span class="muted">(không có tiêu đề)</span>'}<div class="muted" style="font-size:11px;margin-top:5px">${r.published_at?'Đăng gần nhất: '+dateLabel(r.published_at):'Chưa có ngày đăng'}${r.first_seen?' · Ghi nhận: '+dateLabel(r.first_seen):''}</div></td>
     <td><div class="lk">${Object.keys(PL).filter(p=>r.links[p]).map(p=>`<a class="${p}" target="_blank" rel="noopener" href="${esc(r.links[p])}">${PL[p].s}</a>`).join('')}</div></td>
     <td class="n"><div class="v">${Object.keys(PL).filter(p=>r.links[p]).map(p=>`<span>${fmt(r.views[p])}<i class="${p}">${PL[p].s}</i></span>`).join('')}</div></td>
     <td class="n tot">${fmt(r.total)}</td></tr>`).join('');
@@ -124,6 +153,10 @@ function drawChart(id){
 
 function bindSection(id,ch){
   const sec=document.getElementById('sec-'+id);
+  sec.querySelector('[data-order]').addEventListener('change',e=>{
+    state.sort[id]={...SORTS[e.target.value]};rememberSort();
+    sec.querySelector('table').innerHTML=tableHTML(id,ch);bindSort(sec,ch);
+  });
   sec.querySelector('[data-q]').addEventListener('input',e=>{state.q[id]=e.target.value;sec.querySelector('table').innerHTML=tableHTML(id,ch);bindSort(sec,ch)});
   sec.querySelectorAll('[data-metric] button').forEach(b=>b.onclick=()=>{state.metric[id]=b.dataset.m;
     sec.querySelectorAll('[data-metric] button').forEach(x=>x.classList.toggle('on',x===b));drawChart(id);});
@@ -134,7 +167,9 @@ function bindSection(id,ch){
 function bindSort(sec,ch){
   sec.querySelectorAll('th[data-sort]').forEach(th=>th.onclick=()=>{
     const [id,k]=th.dataset.sort.split(':'); if(k==='i'||k==='l') return;
-    const s=state.sort[id]||{k:'total',d:-1}; state.sort[id]={k,d:s.k===k?-s.d:-1};
+    const s=state.sort[id]||{k:'total',d:-1}; state.sort[id]={k,d:s.k===k?-s.d:-1};rememberSort();
+    const select=sec.querySelector('[data-order]');
+    select.value=Object.keys(SORTS).find(key=>SORTS[key].k===k&&SORTS[key].d===state.sort[id].d)||'';
     sec.querySelector('table').innerHTML=tableHTML(id,ch);bindSort(sec,ch);});
 }
 

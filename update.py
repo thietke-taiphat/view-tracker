@@ -2,6 +2,7 @@
 """Thu thập view từ YouTube Shorts + TikTok + Facebook Reels, ghép video trùng nhau, ghi data/*.json"""
 import json, os, re, subprocess, sys, time, unicodedata, urllib.request, urllib.parse
 from pathlib import Path
+from datetime import datetime, timezone
 
 ROOT = Path(__file__).resolve().parent
 DATA = ROOT / "data"
@@ -44,17 +45,19 @@ def fetch_yt(url):
         if not vid:
             continue
         items.append({"id": vid, "url": f"https://www.youtube.com/shorts/{vid}",
-                      "title": e.get("title") or "", "views": e.get("view_count") or 0})
+                      "title": e.get("title") or "", "views": e.get("view_count") or 0, "published_at": published_time(e)})
     if YT_KEY and items:  # có API key -> số view chính xác tuyệt đối
         try:
             for i in range(0, len(items), 50):
                 chunk = items[i:i + 50]
-                q = urllib.parse.urlencode({"part": "statistics", "id": ",".join(x["id"] for x in chunk), "key": YT_KEY})
+                q = urllib.parse.urlencode({"part": "statistics,snippet", "id": ",".join(x["id"] for x in chunk), "key": YT_KEY})
                 with urllib.request.urlopen("https://www.googleapis.com/youtube/v3/videos?" + q, timeout=30) as r:
-                    stats = {v["id"]: int(v["statistics"].get("viewCount", 0)) for v in json.load(r).get("items", [])}
+                    stats = {v["id"]: v for v in json.load(r).get("items", [])}
                 for x in chunk:
                     if x["id"] in stats:
-                        x["views"] = stats[x["id"]]
+                        v = stats[x["id"]]
+                        x["views"] = int(v.get("statistics", {}).get("viewCount", x["views"]))
+                        x["published_at"] = timestamp(v.get("snippet", {}).get("publishedAt")) or x.get("published_at")
         except Exception as ex:
             print("YT API lỗi, dùng số view từ trang:", ex)
     return items
@@ -76,7 +79,7 @@ def fetch_tt(url):
         if not vid:
             continue
         items.append({"id": vid, "url": e.get("url") or f"{url}/video/{vid}",
-                      "title": e.get("title") or e.get("description") or "", "views": e.get("view_count") or 0})
+                      "title": e.get("title") or e.get("description") or "", "views": e.get("view_count") or 0, "published_at": published_time(e)})
     return items
 
 
@@ -89,7 +92,7 @@ def graph(path, token, **params):
 def fetch_fb_graph(token, public):
     """Tuỳ chọn: Page Access Token (đặt secret FB_TOKEN_FUJI / FB_TOKEN_KAITASHI) -> lấy ĐỦ toàn bộ reels của Page."""
     pub = {x["id"]: x for x in public}
-    reels, nxt = [], {"fields": "id,description,permalink_url", "limit": 100}
+    reels, nxt = [], {"fields": "id,description,permalink_url,created_time", "limit": 100}
     path = "me/video_reels"
     while True:
         j = graph(path, token, **nxt)
@@ -118,7 +121,7 @@ def fetch_fb_graph(token, public):
     for r in reels:
         pv = pub.get(r["id"], {}).get("views", 0)
         out.append({"id": r["id"], "url": r.get("permalink_url") or f"https://www.facebook.com/reel/{r['id']}/",
-                    "title": (r.get("description") or "").split("\n")[0], "views": views.get(r["id"], pv)})
+                    "title": (r.get("description") or "").split("\n")[0], "views": views.get(r["id"], pv), "published_at": timestamp(r.get("created_time"))})
     if not out:
         raise RuntimeError("Graph API không trả về reel")
     return out
@@ -167,7 +170,7 @@ def fetch_ig(url, tag):
         FOLLOW_TMP["ig"] = graph(uid, token, fields="followers_count").get("followers_count")
     except Exception as ex:
         print("IG followers lỗi:", str(ex)[:100])
-    media, params = [], {"fields": "id,caption,permalink,media_product_type", "limit": 100}
+    media, params = [], {"fields": "id,caption,permalink,media_product_type,timestamp", "limit": 100}
     while True:
         j = graph(f"{uid}/media", token, **params)
         media += [m for m in j.get("data", []) if m.get("media_product_type") == "REELS"]
@@ -187,13 +190,47 @@ def fetch_ig(url, tag):
                 views = int(d[0]["values"][0]["value"]) if d else 0
             except Exception:
                 pass
-        items.append({"id": m["id"], "url": m.get("permalink") or url, "title": (m.get("caption") or "").split("\n")[0], "views": views})
+        items.append({"id": m["id"], "url": m.get("permalink") or url, "title": (m.get("caption") or "").split("\n")[0], "views": views, "published_at": timestamp(m.get("timestamp"))})
+    return items
+
+
+def timestamp(value):
+    if not value:
+        return None
+    try:
+        if isinstance(value, (int, float)):
+            return int(value) if value > 0 else None
+        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        return int(dt.replace(tzinfo=dt.tzinfo or timezone.utc).timestamp())
+    except (ValueError, TypeError, OverflowError):
+        return None
+
+
+def published_time(item):
+    ts = timestamp(item.get("timestamp") or item.get("release_timestamp"))
+    if ts:
+        return ts
+    day = item.get("upload_date")
+    try:
+        return int(datetime.strptime(day, "%Y%m%d").replace(tzinfo=timezone.utc).timestamp()) if day else None
+    except (TypeError, ValueError):
+        return None
+
+
+def enrich_items(items, previous, now):
+    old = {str(x["id"]): x for x in previous}
+    for item in items:
+        prev = old.get(str(item["id"]), {})
+        item["first_seen"] = prev.get("first_seen") or now
+        item["published_at"] = item.get("published_at") or prev.get("published_at")
     return items
 
 
 # ---------- ghép video trùng nhau ----------
 def norm(t):
-    t = re.sub(r"#\S*", " ", t or "")
+    t = unicodedata.normalize("NFKC", t or "")
+    t = re.sub(r"[\u200b-\u200d\ufeff]", "", t)
+    t = re.sub(r"#\S*", " ", t)
     t = unicodedata.normalize("NFKD", t.lower().replace("đ", "d"))
     t = "".join(c for c in t if not unicodedata.combining(c))
     t = re.sub(r"[^a-z0-9 ]+", " ", t)
@@ -243,6 +280,8 @@ def build_rows(per):
             "views": {p: its[p]["views"] for p in PLATS if p in its},
             "total": sum(its[p]["views"] for p in its),
             "n": len(its),
+            "published_at": max((x.get("published_at") or 0 for x in its.values()), default=0) or None,
+            "first_seen": min((x["first_seen"] for x in its.values() if x.get("first_seen")), default=None),
         })
     rows.sort(key=lambda r: (-r["n"], -r["total"]))
     return rows
@@ -277,7 +316,7 @@ def main():
                          ("ig", lambda: fetch_ig(ch.get("instagram", ""), cid.lower()))):
             try:
                 FOLLOW_TMP.clear()
-                per[plat] = fn(); status[plat] = {"ok": True, "count": len(per[plat])}
+                per[plat] = enrich_items(fn(), prev.get(plat, []), now); status[plat] = {"ok": True, "count": len(per[plat])}
                 fol[plat] = FOLLOW_TMP.get(plat) if FOLLOW_TMP.get(plat) is not None else prev_fol.get(plat, 0)
                 print(f"[{cid}] {plat}: {len(per[plat])} video")
             except NeedsSetup as ex:

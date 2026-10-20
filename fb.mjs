@@ -49,8 +49,8 @@ try {
     await page.mouse.wheel(0, 4000);
     await page.waitForTimeout(1500);
   }
-  // Lấy tiêu đề (caption) cho reel mới; reel cũ dùng cache
-  const todo = [...reels.keys()].filter(id => !cache[id]);
+  // Đọc lại caption của các reel nhìn thấy; chỉ dùng cache nếu lần đọc mới thất bại.
+  const todo = [...reels.keys()];
   const worker = async () => {
     const p = await ctx.newPage();
     while (todo.length) {
